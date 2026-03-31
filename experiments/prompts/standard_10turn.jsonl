@@ -1,10 +1,10 @@
-{"role":"user","content":"Read the file README.md and summarize it in 2-3 sentences."}
-{"role":"user","content":"List all files in the src/ directory (or top-level directory if no src/ exists)."}
-{"role":"user","content":"What does the file utils/api.ts do? Read it and explain in 3-4 sentences."}
-{"role":"user","content":"Explain the caching system in this codebase. What mechanisms exist for cache hits and misses?"}
-{"role":"user","content":"Read the file context.ts and describe its purpose."}
-{"role":"user","content":"How does the sanitization utility work? Check utils/sanitization.ts."}
-{"role":"user","content":"Show me the system prompt sections defined in constants/systemPromptSections.ts."}
-{"role":"user","content":"Read the file services/api/promptCacheBreakDetection.ts and summarize what it detects."}
-{"role":"user","content":"What feature flags relate to caching? Search the codebase and list them."}
-{"role":"user","content":"Summarize all the files you have read and what you learned about the codebase."}
+{"role":"user","content":"What is 2+2? Answer with just the number."}
+{"role":"user","content":"What is the capital of France? Answer in one word."}
+{"role":"user","content":"Name three primary colors, comma separated."}
+{"role":"user","content":"What planet is closest to the sun? One word."}
+{"role":"user","content":"How many days in a week? Just the number."}
+{"role":"user","content":"What is the chemical symbol for water?"}
+{"role":"user","content":"Name the largest ocean on Earth in one word."}
+{"role":"user","content":"What is 10 squared? Just the number."}
+{"role":"user","content":"What language has the most native speakers? One word."}
+{"role":"user","content":"What is the freezing point of water in Celsius? Just the number."}

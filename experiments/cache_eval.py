@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+import uuid as _uuid
 from typing import Optional
 from collections import defaultdict
 
@@ -240,10 +241,27 @@ class LogParser:
         return latest
 
     @staticmethod
+    def find_all_sessions(after: datetime) -> list[Path]:
+        if not PROJECTS_DIR.exists():
+            return []
+        found: list[tuple[float, Path]] = []
+        for jsonl in PROJECTS_DIR.rglob("*.jsonl"):
+            if "subagents" in jsonl.parts:
+                continue
+            try:
+                mtime = jsonl.stat().st_mtime
+                mt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                if mt > after:
+                    found.append((mtime, jsonl))
+            except OSError:
+                continue
+        found.sort(key=lambda x: x[0])
+        return [p for _, p in found]
+
+    @staticmethod
     def parse_session(jsonl_path: Path) -> list[TurnMetrics]:
         turns: list[TurnMetrics] = []
         turn_number = 0
-        seen_request_ids: set[str] = set()
 
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -265,15 +283,13 @@ class LogParser:
                     continue
 
                 usage = msg.get("usage", {})
-                request_id = entry.get("requestId", "")
-
-                if request_id and request_id in seen_request_ids:
-                    continue
-                if request_id:
-                    seen_request_ids.add(request_id)
 
                 is_sidechain = entry.get("isSidechain", False)
                 if is_sidechain:
+                    continue
+
+                output_tokens = usage.get("output_tokens", 0)
+                if output_tokens == 0:
                     continue
 
                 turn_number += 1
@@ -288,7 +304,7 @@ class LogParser:
                         ),
                         cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
                         timestamp=entry.get("timestamp", ""),
-                        request_id=request_id,
+                        request_id=entry.get("requestId", ""),
                         session_id=entry.get("sessionId", ""),
                     )
                 )
@@ -322,53 +338,51 @@ class TrialRunner:
                 prompts.append(obj["content"])
         return prompts[: self.max_turns]
 
-    def run_single_prompt(self, prompt: str) -> subprocess.CompletedProcess:
-        cmd = [
-            self.cli_binary,
-            "-p",
-            prompt,
-            "--model",
-            self.model,
-            "--output-format",
-            "text",
-            "--verbose",
-            "--no-user-rules",
-        ]
-        env = os.environ.copy()
-        env["CLAUDE_CODE_DISABLE_MCP"] = "1"
-
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=self.working_dir,
-            env=env,
-            timeout=300,
-        )
+    def _build_cmd(self, extra_args: list[str]) -> list[str]:
+        if self.cli_binary.startswith("node "):
+            return self.cli_binary.split() + extra_args
+        return [self.cli_binary] + extra_args
 
     def run_multi_turn_session(self, prompts: list[str]) -> TrialResult:
         before = datetime.now(tz=timezone.utc)
-        session_id: Optional[str] = None
         errors: list[str] = []
+        env = os.environ.copy()
+        env["CLAUDE_CODE_DISABLE_MCP"] = "1"
+
+        session_id = str(_uuid.uuid4())
 
         for i, prompt in enumerate(prompts):
             try:
-                cmd = [
-                    self.cli_binary,
-                    "-p",
-                    prompt,
-                    "--model",
-                    self.model,
-                    "--output-format",
-                    "text",
-                    "--verbose",
-                    "--no-user-rules",
-                ]
-                env = os.environ.copy()
-                env["CLAUDE_CODE_DISABLE_MCP"] = "1"
+                if i == 0:
+                    args = [
+                        "-p",
+                        prompt,
+                        "--model",
+                        self.model,
+                        "--output-format",
+                        "text",
+                        "--verbose",
+                        "--dangerously-skip-permissions",
+                        "--session-id",
+                        session_id,
+                    ]
+                else:
+                    args = [
+                        "-p",
+                        prompt,
+                        "--resume",
+                        session_id,
+                        "--model",
+                        self.model,
+                        "--output-format",
+                        "text",
+                        "--verbose",
+                        "--dangerously-skip-permissions",
+                    ]
 
+                full_cmd = self._build_cmd(args)
                 result = subprocess.run(
-                    cmd,
+                    full_cmd,
                     capture_output=True,
                     text=True,
                     cwd=self.working_dir,
@@ -377,23 +391,25 @@ class TrialRunner:
                 )
 
                 if result.returncode != 0:
-                    errors.append(f"Turn {i + 1} failed: {result.stderr[:200]}")
+                    errors.append(f"Turn {i + 1} failed: {result.stderr[:300]}")
 
-                if i == 0:
-                    time.sleep(2)
+                time.sleep(1)
 
             except subprocess.TimeoutExpired:
                 errors.append(f"Turn {i + 1} timed out after 300s")
             except Exception as e:
                 errors.append(f"Turn {i + 1} error: {e}")
 
-        session_file = LogParser.find_latest_session(after=before)
+        time.sleep(2)
+        session_file = LogParser.find_session_file(session_id)
+        if session_file is None:
+            session_file = LogParser.find_latest_session(after=before)
         if session_file is None:
             return TrialResult(
                 trial_id=0,
                 phase="",
                 timestamp=before.isoformat(),
-                error=f"No session file found after {before.isoformat()}. Errors: {'; '.join(errors)}",
+                error=f"No session file found for {session_id}. Errors: {'; '.join(errors)}",
             )
 
         turns = LogParser.parse_session(session_file)
@@ -860,7 +876,7 @@ class Visualization:
 
             bp = ax.boxplot(
                 [b_vals, o_vals],
-                labels=["Baseline", "Optimized"],
+                tick_labels=["Baseline", "Optimized"],
                 patch_artist=True,
                 widths=0.5,
             )
@@ -1042,17 +1058,29 @@ def print_summary_table(stats: SummaryStats):
 
 
 def run_phase(
-    phase: str, trials: int, cli_binary: str, model: str, working_dir: Optional[str]
+    phase: str,
+    trials: int,
+    cli_binary: str,
+    model: str,
+    working_dir: Optional[str],
 ):
     output_dir = BASELINE_DIR if phase == "baseline" else OPTIMIZED_DIR
+
+    existing = load_trials(output_dir)
+    if len(existing) >= trials:
+        print(f"  Found {len(existing)} existing {phase} trials, skipping execution.")
+        print(f"  Delete {output_dir}/*.json to re-run.")
+        return existing, Statistics.compute_summary(existing)
+
     runner = TrialRunner(
         cli_binary=cli_binary,
         model=model,
         working_dir=working_dir,
     )
 
-    results: list[TrialResult] = []
-    for i in range(1, trials + 1):
+    results: list[TrialResult] = list(existing)
+    start_id = len(results) + 1
+    for i in range(start_id, trials + 1):
         print(f"\n{'─' * 40}")
         print(f"  Trial {i}/{trials} [{phase}]")
         print(f"{'─' * 40}")
@@ -1065,7 +1093,13 @@ def run_phase(
             print(f"  Turns captured: {len(result.turns)}")
             print(f"  Overall hit rate: {result.overall_cache_hit_rate:.1f}%")
             print(f"  Total input: {result.total_input:,} tokens")
-            print(f"  Session file: {result.session_file}")
+            for t in result.turns:
+                print(
+                    f"    Turn {t.turn}: hit={t.cache_hit_rate:.1f}% "
+                    f"read={t.cache_read_input_tokens:,} "
+                    f"create={t.cache_creation_input_tokens:,} "
+                    f"input={t.input_tokens:,}"
+                )
         else:
             print(f"  WARNING: No turns captured. Error: {result.error}")
 
@@ -1136,6 +1170,12 @@ def compare_phases():
     print(f"\nAll figures saved to {FIGURES_DIR}/")
 
 
+def _resolve_cli(cli_path: str) -> str:
+    if cli_path.endswith(".js"):
+        return f"node {cli_path}"
+    return cli_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cache Evaluation Script for Claude Code CLI",
@@ -1152,7 +1192,14 @@ def main():
         "--trials", type=int, default=10, help="Number of trials (default: 10)"
     )
     parser.add_argument(
-        "--cli", default="claude", help="Path to CLI binary (default: claude)"
+        "--cli",
+        default="/tmp/claude-test/baseline/cli.js",
+        help="Path to baseline CLI (default: /tmp/claude-test/baseline/cli.js)",
+    )
+    parser.add_argument(
+        "--cli-optimized",
+        default="/tmp/claude-test/optimized/cli.js",
+        help="Path to optimized CLI (default: /tmp/claude-test/optimized/cli.js)",
     )
     parser.add_argument(
         "--model", default="claude-sonnet-4-20250514", help="Model to use"
@@ -1163,26 +1210,52 @@ def main():
 
     args = parser.parse_args()
 
+    cli_baseline = _resolve_cli(args.cli)
+    cli_optimized = _resolve_cli(args.cli_optimized)
+
     print("Cache Evaluation for Claude Code CLI")
     print(f"  Phase:    {args.phase}")
     print(f"  Trials:   {args.trials}")
-    print(f"  CLI:      {args.cli}")
+    print(f"  CLI baseline:  {cli_baseline}")
+    print(f"  CLI optimized: {cli_optimized}")
     print(f"  Model:    {args.model}")
     print(f"  WorkDir:  {args.working_dir or os.getcwd()}")
     print()
 
-    if args.phase in ("baseline", "optimized"):
-        run_phase(args.phase, args.trials, args.cli, args.model, args.working_dir)
+    if args.phase == "baseline":
+        run_phase(
+            "baseline",
+            args.trials,
+            cli_baseline,
+            args.model,
+            args.working_dir,
+        )
+    elif args.phase == "optimized":
+        run_phase(
+            "optimized",
+            args.trials,
+            cli_optimized,
+            args.model,
+            args.working_dir,
+        )
     elif args.phase == "compare":
         compare_phases()
     elif args.phase == "all":
-        print(">>> Phase 1/2: BASELINE")
-        b_results, b_stats = run_phase(
-            "baseline", args.trials, args.cli, args.model, args.working_dir
+        print(">>> Phase 1/3: BASELINE")
+        run_phase(
+            "baseline",
+            args.trials,
+            cli_baseline,
+            args.model,
+            args.working_dir,
         )
-        print("\n>>> Phase 2/2: OPTIMIZED")
-        o_results, o_stats = run_phase(
-            "optimized", args.trials, args.cli, args.model, args.working_dir
+        print("\n>>> Phase 2/3: OPTIMIZED")
+        run_phase(
+            "optimized",
+            args.trials,
+            cli_optimized,
+            args.model,
+            args.working_dir,
         )
         print("\n>>> Phase 3/3: COMPARISON")
         compare_phases()
