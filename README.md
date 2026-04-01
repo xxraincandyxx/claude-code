@@ -25,12 +25,13 @@ claude/
 ├── bridge/             # IPC and session bridging
 ├── buddy/              # Notification system
 ├── cli/                # CLI argument handlers
-├── commands/            # Slash commands implementation (100+ commands)
+├── commands/           # Slash commands implementation (100+ commands)
 ├── components/         # React UI components
 ├── constants/          # Application constants and prompts
 ├── context/            # Context management
 ├── coordinator/        # Task coordination
 ├── entrypoints/        # Application entry points
+├── experiments/        # Cache optimization evaluation (A/B testing)
 ├── hooks/              # React hooks
 ├── ink/                # Terminal rendering library
 ├── keybindings/        # Keyboard shortcuts
@@ -51,6 +52,63 @@ claude/
 ├── utils/              # Utility functions
 └── voice/              # Voice mode support
 ```
+
+## Running the CLI
+
+### Installed Binary
+
+The official CLI installs to `~/.local/share/claude/versions/<version>` as a compiled Mach-O binary (macOS) or equivalent native binary on other platforms.
+
+### NPM Package (Patchable)
+
+For development and experimentation, the npm package provides a pre-bundled `cli.js` (12MB, minified) that runs via Node.js:
+
+```bash
+# Download and extract
+npm pack @anthropic-ai/claude-code@2.1.63
+tar xzf anthropic-ai-claude-code-2.1.63.tgz
+
+# Run directly
+node package/cli.js --version
+```
+
+### Building from Source
+
+**Not possible with this snapshot.** The source code is incomplete — missing `package.json`, `tsconfig.json`, `bunfig.toml`, and private Anthropic dependencies (`@ant/*` packages). The binary is compiled with Bun's native compiler, which requires the full internal build pipeline.
+
+## Experiments
+
+The `experiments/` directory contains an A/B evaluation framework for measuring prompt cache optimization:
+
+```bash
+cd experiments
+
+# Setup Python environment
+uv sync
+
+# Run baseline trials (10 trials × 10 turns)
+uv run python cache_eval.py --phase baseline --trials 10 \
+  --cli /tmp/claude-test/baseline/cli.js \
+  --working-dir /path/to/project
+
+# Run optimized trials
+uv run python cache_eval.py --phase optimized --trials 10 \
+  --cli-optimized /tmp/claude-test/optimized/cli.js \
+  --working-dir /path/to/project
+
+# Compare results and generate figures
+uv run python cache_eval.py --phase compare
+```
+
+### Results (N=10, 200 API calls)
+
+| Metric | Baseline | Optimized | Delta |
+|--------|----------|-----------|-------|
+| Cache hit rate | 88.6% ± 5.8% | 91.5% ± 1.5% | +2.9 pp |
+| Cost/session | $0.153 | $0.131 | -14.3% |
+| Variance (σ) | 5.8% | 1.5% | -74% |
+
+See [experiments/report.md](experiments/report.md) for the full analysis.
 
 ## Core Architecture
 
@@ -84,86 +142,6 @@ Configure in `~/.claude/settings.json`:
   }
 }
 ```
-
-### Sandbox Configuration
-
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "allowUnsandboxedCommands": false,
-    "filesystem": {
-      "allowWrite": ["/tmp/claude"],
-      "denyWrite": ["/etc", "/var"]
-    },
-    "network": {
-      "allowedDomains": ["api.github.com"]
-    }
-  }
-}
-```
-
-## Development
-
-### Prerequisites
-
-- Node.js 18+ (for build tools)
-- bubblewrap (bwrap) for sandboxing on Linux
-- macOS or Linux (WSL2 supported)
-
-### Building
-
-```bash
-# Install dependencies
-npm install
-
-# Build the project
-npm run build
-
-# Run in development mode
-npm run dev
-```
-
-### Testing
-
-```bash
-# Run unit tests
-npm test
-
-# Run integration tests
-npm run test:integration
-
-# Run with coverage
-npm run test:coverage
-```
-
-## Commands
-
-### Slash Commands
-
-- `/ask` - Ask a question
-- `/bug` - Report a bug
-- `/clear` - Clear conversation
-- `/commit` - Create a commit
-- `/diff` - Show changes
-- `/help` - Show help
-- `/init` - Initialize project
-- `/login` - Login to Claude
-- `/logout` - Logout
-- `/model` - Select AI model
-- `/plan` - Show task plan
-- `/review` - Review code
-- `/search` - Search code
-- `/shell` - Run shell command
-- And 100+ more...
-
-### Keyboard Shortcuts
-
-- `Ctrl+C` - Cancel current operation
-- `Ctrl+D` - Exit REPL
-- `Ctrl+L` - Clear screen
-- `Tab` - Autocomplete
-- `Up/Down` - History navigation
 
 ## Configuration
 
@@ -203,20 +181,11 @@ The bash security system validates:
 - Shell expansion (`$VAR`, `${VAR}`)
 - Dangerous patterns (sudo, git hooks, etc.)
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests
-5. Submit a pull request
-
 ## License
 
 Proprietary - Anthropic
 
 ## Support
 
-- Documentation: [docs.anthropic.com](https://docs.anthropic.com)
-- Issues: GitHub Issues
-- Email: support@anthropic.com
+- Documentation: [code.claude.com](https://code.claude.com/docs/en/overview)
+- Issues: [GitHub Issues](https://github.com/anthropics/claude-code/issues)
